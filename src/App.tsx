@@ -17,6 +17,7 @@ import {
   DoorOpen,
   Volume2,
   Smartphone,
+  User,
 } from 'lucide-react';
 import { multiplayerService } from './services/multiplayer';
 import { audioSystem } from './services/audioSystem';
@@ -29,17 +30,19 @@ import { TabletPairingModal } from './components/TabletPairingModal';
 type AppScreen = 'menu' | 'lobby' | 'game' | 'gameover' | 'victory';
 
 export default function App() {
-  // Mobile / Tablet Remote Controller Page route check (e.g. /controle, /controle/7K4P9X, or ?mode=controle)
+  // Mobile / Tablet Remote Controller Page route check (works on root domain, GitHub Pages subpaths, or hash/query)
   const urlParams = new URLSearchParams(window.location.search);
+  const hash = window.location.hash;
   const pathParts = window.location.pathname.split('/').filter(Boolean);
   const isControllerMode =
     urlParams.get('mode') === 'controle' ||
-    pathParts[0] === 'controle' ||
-    window.location.pathname.startsWith('/controle');
+    pathParts.includes('controle') ||
+    hash.includes('controle');
 
   if (isControllerMode) {
     return <RemoteControllerPage />;
   }
+
 
   const [screen, setScreen] = useState<AppScreen>('menu');
   const [playerName, setPlayerName] = useState<string>('Aluno ' + Math.floor(10 + Math.random() * 89));
@@ -135,8 +138,24 @@ export default function App() {
     };
   }, []);
 
+  const handlePlaySolo = () => {
+    setErrorMessage(null);
+    setRoomCode('SOLO');
+    setPlayerIndex(1);
+    setIsHost(true);
+    setPlayersInLobby(1);
+    multiplayerService.startSoloMode();
+    setScreen('game');
+  };
+
   const handleCreateRoom = () => {
     setErrorMessage(null);
+    if (!multiplayerService.isConnected) {
+      setErrorMessage(
+        'Servidor multiplayer desconectado (comum em hospedagens estáticas como GitHub Pages). Use o botão "JOGAR MODO SOLO / TREINO" para jogar agora mesmo sem precisar de servidor!'
+      );
+      return;
+    }
     multiplayerService.createRoom(playerName);
   };
 
@@ -145,9 +164,16 @@ export default function App() {
       setErrorMessage('Digite o código da sala de 6 dígitos.');
       return;
     }
+    if (!multiplayerService.isConnected) {
+      setErrorMessage(
+        'Servidor multiplayer desconectado. Para jogar sem servidor na web, utilize o "MODO SOLO / TREINO".'
+      );
+      return;
+    }
     setErrorMessage(null);
     multiplayerService.joinRoom(inputRoomCode.trim().toUpperCase(), playerName);
   };
+
 
   const handleCopyCode = () => {
     navigator.clipboard.writeText(roomCode);
@@ -205,12 +231,21 @@ export default function App() {
 
           {/* Action Buttons */}
           <div className="w-full max-w-xs space-y-3">
+            {/* Solo / Offline Button */}
+            <button
+              onClick={handlePlaySolo}
+              className="w-full bg-emerald-600 hover:bg-emerald-500 text-black font-black py-3 rounded text-sm tracking-wider flex items-center justify-center gap-2 transition cursor-pointer shadow-lg shadow-emerald-950/40 active:scale-[0.98]"
+            >
+              <User className="w-4 h-4 fill-black" />
+              JOGAR MODO SOLO / TREINO
+            </button>
+
             <button
               onClick={handleCreateRoom}
-              className="w-full bg-amber-600 hover:bg-amber-500 text-black font-bold py-3 rounded text-sm tracking-wider flex items-center justify-center gap-2 transition cursor-pointer shadow-lg shadow-amber-900/30 active:scale-[0.98]"
+              className="w-full bg-amber-600 hover:bg-amber-500 text-black font-bold py-2.5 rounded text-xs tracking-wider flex items-center justify-center gap-2 transition cursor-pointer shadow-lg shadow-amber-900/30 active:scale-[0.98]"
             >
-              <Play className="w-4 h-4 fill-black" />
-              CRIAR PARTIDA
+              <Play className="w-3.5 h-3.5 fill-black" />
+              CRIAR SALA MULTIPLAYER (2J)
             </button>
 
             {/* Join Room Form */}
@@ -233,6 +268,7 @@ export default function App() {
               </div>
             </div>
           </div>
+
 
           {/* Secondary Buttons (How to play, Firebase & Mobile Controller) */}
           <div className="flex flex-wrap items-center justify-center gap-3 text-xs pt-3">

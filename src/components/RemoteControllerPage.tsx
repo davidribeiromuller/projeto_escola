@@ -17,11 +17,14 @@ import { Gamepad2, Wifi, WifiOff, Zap, Hand, Maximize2, ShieldAlert, DoorClosed,
 import { multiplayerService } from '../services/multiplayer';
 
 export const RemoteControllerPage: React.FC = () => {
-  // Query param or path parsing for auto-connection (e.g. /controle/7K4P9X or ?code=7K4P9X)
+  // Query param or path parsing for auto-connection (e.g. /controle/7K4P9X, ?code=7K4P9X or ?mode=controle&code=7K4P9X)
   const urlParams = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#\/?/, '?'));
   const pathParts = window.location.pathname.split('/').filter(Boolean);
-  const pathCode = pathParts[0] === 'controle' && pathParts[1] ? pathParts[1] : '';
-  const initialCode = (urlParams.get('code') || pathCode || '').toUpperCase().trim();
+  const ctrlIdx = pathParts.indexOf('controle');
+  const pathCode = ctrlIdx !== -1 && pathParts[ctrlIdx + 1] ? pathParts[ctrlIdx + 1] : '';
+  const initialCode = (urlParams.get('code') || hashParams.get('code') || pathCode || '').toUpperCase().trim();
+
 
   const [code, setCode] = useState<string>(initialCode);
   const [isConnected, setIsConnected] = useState<boolean>(false);

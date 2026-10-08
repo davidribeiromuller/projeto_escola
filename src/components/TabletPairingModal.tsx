@@ -17,7 +17,8 @@ export const TabletPairingModal: React.FC<TabletPairingModalProps> = ({ playerIn
   useEffect(() => {
     const onTokenCreated = (data: any) => {
       setControllerCode(data.controllerCode);
-      const url = `${window.location.origin}/controle/${data.controllerCode}`;
+      const baseUrl = window.location.href.split('?')[0].split('#')[0].replace(/\/$/, '');
+      const url = `${baseUrl}/?mode=controle&code=${data.controllerCode}`;
       QRCode.toDataURL(url, {
         width: 240,
         margin: 1.5,
@@ -29,6 +30,7 @@ export const TabletPairingModal: React.FC<TabletPairingModalProps> = ({ playerIn
         .then((dataUrl) => setQrCodeDataUrl(dataUrl))
         .catch((err) => console.warn('QR error:', err));
     };
+
 
     const onConnected = () => {
       setIsConnected(true);
@@ -59,9 +61,11 @@ export const TabletPairingModal: React.FC<TabletPairingModalProps> = ({ playerIn
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const baseUrl = typeof window !== 'undefined' ? window.location.href.split('?')[0].split('#')[0].replace(/\/$/, '') : '';
   const directUrl = controllerCode
-    ? `${window.location.origin}/controle/${controllerCode}`
+    ? `${baseUrl}/?mode=controle&code=${controllerCode}`
     : '';
+
 
   return (
     <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 p-4 font-mono select-none">

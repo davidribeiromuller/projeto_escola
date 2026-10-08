@@ -41,12 +41,39 @@ class MultiplayerService {
   public playerIndex: 1 | 2 = 1;
   public isConnected: boolean = false;
   public isControllerConnected: boolean = false;
+  public isSolo: boolean = false;
+
+  private localMissionState: MissionStateNetwork = {
+    booksCollected: 0,
+    booksRequired: 3,
+    fusesInstalled: 0,
+    fusesRequired: 3,
+    passwordCluesFound: 0,
+    passwordEntered: false,
+    mainGateProgress: 0,
+  };
 
   private listeners: Map<string, Set<MessageCallback>> = new Map();
   private reconnectInterval: number | null = null;
 
   constructor() {
     this.connectSocket();
+  }
+
+  public startSoloMode() {
+    this.isSolo = true;
+    this.isHost = true;
+    this.playerIndex = 1;
+    this.roomCode = 'SOLO';
+    this.localMissionState = {
+      booksCollected: 0,
+      booksRequired: 3,
+      fusesInstalled: 0,
+      fusesRequired: 3,
+      passwordCluesFound: 0,
+      passwordEntered: false,
+      mainGateProgress: 0,
+    };
   }
 
   private getSocketUrl(): string {
@@ -224,6 +251,23 @@ class MultiplayerService {
   }
 
   public sendMissionAction(action: string, delta?: number) {
+    if (this.isSolo || !this.isConnected) {
+      if (action === 'BOOK_DELIVERED') {
+        this.localMissionState.booksCollected++;
+      } else if (action === 'FUSE_INSTALLED') {
+        this.localMissionState.fusesInstalled++;
+      } else if (action === 'PASSWORD_SOLVED') {
+        this.localMissionState.passwordEntered = true;
+      } else if (action === 'GATE_PROGRESS') {
+        this.localMissionState.mainGateProgress = Math.min(100, this.localMissionState.mainGateProgress + (delta || 1));
+      }
+      this.emit('MISSION_UPDATE', { missionState: { ...this.localMissionState } });
+      if (this.localMissionState.mainGateProgress >= 100) {
+        this.emit('MATCH_ENDED', { reason: 'VICTORY' });
+      }
+      return;
+    }
+
     this.send({
       type: 'MISSION_ACTION',
       action,
@@ -232,10 +276,18 @@ class MultiplayerService {
   }
 
   public sendPlayerDowned() {
+    if (this.isSolo || !this.isConnected) {
+      setTimeout(() => {
+        this.emit('MATCH_ENDED', { reason: 'DEFEAT', message: 'Solange pegou você na escuridão dos corredores!' });
+      }, 1000);
+      return;
+    }
+
     this.send({
       type: 'PLAYER_DOWNED',
     });
   }
+
 
   public sendPlayerRevived(targetPlayerId: string) {
     this.send({
