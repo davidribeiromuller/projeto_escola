@@ -1,7 +1,10 @@
 /**
- * Unified Multiplayer Service for "Depois da Última Aula"
- * Realtime communication with room codes, max 2 players validation,
- * state synchronization, and reconnection handling.
+ * Unified Multiplayer Service for "FUJA DA SOLANGE!!"
+ * 
+ * Supports:
+ * - Room creation and joining (strict 2 players limit)
+ * - Remote Tablet Controller pairing (does NOT count towards 2 player limit)
+ * - State synchronization & Solange AI host sync
  */
 
 export interface RemotePlayer {
@@ -37,6 +40,7 @@ class MultiplayerService {
   public isHost: boolean = false;
   public playerIndex: 1 | 2 = 1;
   public isConnected: boolean = false;
+  public isControllerConnected: boolean = false;
 
   private listeners: Map<string, Set<MessageCallback>> = new Map();
   private reconnectInterval: number | null = null;
@@ -70,6 +74,11 @@ class MultiplayerService {
       this.ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          if (msg.type === 'CONTROL_CONNECTED') {
+            this.isControllerConnected = true;
+          } else if (msg.type === 'CONTROL_DISCONNECTED') {
+            this.isControllerConnected = false;
+          }
           this.emit(msg.type, msg);
         } catch (e) {
           console.error('Error parsing WS message:', e);
@@ -79,7 +88,6 @@ class MultiplayerService {
       this.ws.onclose = () => {
         this.isConnected = false;
         this.emit('SOCKET_DISCONNECTED', {});
-        // Auto-reconnect every 2 seconds
         if (!this.reconnectInterval) {
           this.reconnectInterval = window.setInterval(() => {
             this.connectSocket();
@@ -88,7 +96,7 @@ class MultiplayerService {
       };
 
       this.ws.onerror = (err) => {
-        console.warn('Socket connection note:', err);
+        console.warn('Socket note:', err);
       };
     } catch (e) {
       console.warn('WebSocket init exception:', e);
@@ -119,7 +127,6 @@ class MultiplayerService {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     } else {
-      // If socket is closed, try to reconnect and queue
       this.connectSocket();
       setTimeout(() => {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -129,6 +136,7 @@ class MultiplayerService {
     }
   }
 
+  // --- Match & Player Actions ---
   public createRoom(name: string) {
     this.isHost = true;
     this.playerIndex = 1;
@@ -159,7 +167,8 @@ class MultiplayerService {
     isRunning: boolean,
     isHiding: boolean,
     hidingSpotId: string | null,
-    isDowned: boolean
+    isDowned: boolean,
+    extras?: { stamina?: number; heldItem?: string | null; noiseLevel?: number; zone?: string }
   ) {
     this.send({
       type: 'PLAYER_SYNC',
@@ -171,6 +180,10 @@ class MultiplayerService {
       isHiding,
       hidingSpotId,
       isDowned,
+      stamina: extras?.stamina,
+      heldItem: extras?.heldItem,
+      noiseLevel: extras?.noiseLevel,
+      zone: extras?.zone,
     });
   }
 
@@ -191,7 +204,7 @@ class MultiplayerService {
     });
   }
 
-  public sendAntonioHostSync(
+  public sendSolangeHostSync(
     x: number,
     y: number,
     state: string,
@@ -200,7 +213,7 @@ class MultiplayerService {
     targetY?: number
   ) {
     this.send({
-      type: 'ANTONIO_HOST_SYNC',
+      type: 'SOLANGE_HOST_SYNC',
       x,
       y,
       state,
@@ -228,6 +241,37 @@ class MultiplayerService {
     this.send({
       type: 'PLAYER_REVIVED',
       targetPlayerId,
+    });
+  }
+
+  // --- Tablet Controller Support ---
+  public requestControllerToken() {
+    this.send({
+      type: 'CREATE_CONTROLLER_TOKEN',
+    });
+  }
+
+  public connectAsController(code: string) {
+    this.send({
+      type: 'CONTROL_CONNECT',
+      code: code.toUpperCase().trim(),
+    });
+  }
+
+  public sendControlInput(
+    dx: number,
+    dy: number,
+    run: boolean,
+    interact: boolean,
+    hide?: boolean
+  ) {
+    this.send({
+      type: 'CONTROL_INPUT',
+      dx,
+      dy,
+      run,
+      interact,
+      hide,
     });
   }
 }

@@ -62,7 +62,7 @@ class AudioSystem {
     osc.stop(now + 0.1);
   }
 
-  // --- Dynamic Heartbeat (Proportional to Antonio's distance) ---
+  // --- Dynamic Heartbeat (Proportional to Solange's distance) ---
   public setHeartbeatProximity(distance: number, maxDistance: number = 400) {
     if (this.isMuted || distance > maxDistance || distance <= 0) {
       this.stopHeartbeat();

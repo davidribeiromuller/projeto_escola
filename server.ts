@@ -28,6 +28,7 @@ interface PlayerState {
   inventory: string[];
   ws: WebSocket;
   lastPing: number;
+  controllerToken?: string;
 }
 
 interface Room {
@@ -36,7 +37,7 @@ interface Room {
   players: Map<string, PlayerState>;
   status: 'waiting' | 'countdown' | 'playing' | 'gameover' | 'victory';
   countdown: number;
-  gameTimeRemaining: number; // 900 seconds (15 min)
+  gameTimeRemaining: number;
   missionState: {
     booksCollected: number;
     booksRequired: number;
@@ -44,9 +45,9 @@ interface Room {
     fusesRequired: number;
     passwordCluesFound: number;
     passwordEntered: boolean;
-    mainGateProgress: number; // 0 to 100
+    mainGateProgress: number;
   };
-  antonio: {
+  solange: {
     x: number;
     y: number;
     state: string;
@@ -58,9 +59,21 @@ interface Room {
   gameLoopTimer?: NodeJS.Timeout;
 }
 
-const rooms = new Map<string, Room>();
+interface ControllerSession {
+  code: string;
+  token: string;
+  roomCode: string;
+  playerId: string;
+  playerIndex: 1 | 2;
+  ws?: WebSocket;
+  createdAt: number;
+}
 
-function generateRoomCode(): string {
+const rooms = new Map<string, Room>();
+// Controller codes mapping: 6-char code -> session
+const controllerSessions = new Map<string, ControllerSession>();
+
+function generateShortCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
   for (let i = 0; i < 6; i++) {
@@ -83,22 +96,168 @@ function cleanUpRoom(code: string) {
   if (!room) return;
   if (room.countdownTimer) clearInterval(room.countdownTimer);
   if (room.gameLoopTimer) clearInterval(room.gameLoopTimer);
+
+  // Invalidate any controller sessions associated with this room
+  for (const [cCode, sess] of controllerSessions.entries()) {
+    if (sess.roomCode === code) {
+      if (sess.ws && sess.ws.readyState === WebSocket.OPEN) {
+        sess.ws.send(JSON.stringify({ type: 'MATCH_ENDED', message: 'A partida foi encerrada.' }));
+      }
+      controllerSessions.delete(cCode);
+    }
+  }
+
   rooms.delete(code);
 }
 
 wss.on('connection', (ws: WebSocket) => {
   let currentRoomCode: string | null = null;
   let playerId: string | null = null;
+  let isControllerSocket: boolean = false;
+  let controllerCodeAssigned: string | null = null;
 
   ws.on('message', (data: string) => {
     try {
       const msg = JSON.parse(data.toString());
 
       switch (msg.type) {
+        // --- 1. TABLET CONTROLLER PAIRING MESSAGES ---
+        case 'CREATE_CONTROLLER_TOKEN': {
+          // PC player requests a remote tablet code
+          if (!currentRoomCode || !playerId) {
+            ws.send(JSON.stringify({ type: 'ERROR', message: 'Você precisa estar em uma sala para criar um controle.' }));
+            return;
+          }
+          const room = rooms.get(currentRoomCode);
+          if (!room) return;
+          const player = room.players.get(playerId);
+          if (!player) return;
+
+          let cCode = generateShortCode();
+          while (controllerSessions.has(cCode)) {
+            cCode = generateShortCode();
+          }
+
+          const token = `tok_${Math.random().toString(36).substring(2, 12)}`;
+          const session: ControllerSession = {
+            code: cCode,
+            token,
+            roomCode: currentRoomCode,
+            playerId,
+            playerIndex: player.playerIndex,
+            createdAt: Date.now(),
+          };
+
+          controllerSessions.set(cCode, session);
+
+          ws.send(
+            JSON.stringify({
+              type: 'CONTROLLER_TOKEN_CREATED',
+              controllerCode: cCode,
+              token,
+              playerIndex: player.playerIndex,
+            })
+          );
+          break;
+        }
+
+        case 'CONTROL_CONNECT': {
+          // Tablet connects with the 6-character code
+          const targetCode = (msg.code || '').toUpperCase().trim();
+          const session = controllerSessions.get(targetCode);
+
+          if (!session) {
+            ws.send(
+              JSON.stringify({
+                type: 'ERROR',
+                message: 'Código de controle inválido ou expirado.',
+              })
+            );
+            return;
+          }
+
+          const room = rooms.get(session.roomCode);
+          if (!room) {
+            ws.send(
+              JSON.stringify({
+                type: 'ERROR',
+                message: 'A partida associada a este controle não existe mais.',
+              })
+            );
+            return;
+          }
+
+          const player = room.players.get(session.playerId);
+          if (!player) {
+            ws.send(
+              JSON.stringify({
+                type: 'ERROR',
+                message: 'O jogador correspondente não está mais conectado.',
+              })
+            );
+            return;
+          }
+
+          // Successfully bind tablet socket
+          isControllerSocket = true;
+          controllerCodeAssigned = targetCode;
+          session.ws = ws;
+
+          // Notify Tablet
+          ws.send(
+            JSON.stringify({
+              type: 'CONTROL_CONNECTED',
+              roomCode: session.roomCode,
+              playerIndex: session.playerIndex,
+              playerName: player.name,
+              message: `Conectado ao Jogador ${session.playerIndex} (${player.name})`,
+            })
+          );
+
+          // Notify PC Screen
+          if (player.ws.readyState === WebSocket.OPEN) {
+            player.ws.send(
+              JSON.stringify({
+                type: 'CONTROL_CONNECTED',
+                playerIndex: session.playerIndex,
+                message: `Tablet conectado com sucesso ao Jogador ${session.playerIndex}!`,
+              })
+            );
+          }
+          break;
+        }
+
+        case 'CONTROL_INPUT': {
+          // Tablet sends virtual joystick & action buttons
+          if (!controllerCodeAssigned) return;
+          const session = controllerSessions.get(controllerCodeAssigned);
+          if (!session) return;
+
+          const room = rooms.get(session.roomCode);
+          if (!room) return;
+
+          const player = room.players.get(session.playerId);
+          if (player && player.ws.readyState === WebSocket.OPEN) {
+            // Forward input strictly to that player's PC
+            player.ws.send(
+              JSON.stringify({
+                type: 'CONTROL_INPUT',
+                dx: msg.dx,
+                dy: msg.dy,
+                run: msg.run,
+                interact: msg.interact,
+                hide: msg.hide,
+              })
+            );
+          }
+          break;
+        }
+
+        // --- 2. ROOM & PLAYER LIFECYCLE ---
         case 'CREATE_ROOM': {
-          let code = generateRoomCode();
+          let code = generateShortCode();
           while (rooms.has(code)) {
-            code = generateRoomCode();
+            code = generateShortCode();
           }
 
           const validPlayerId: string = msg.playerId || `p_${Math.random().toString(36).substring(2, 9)}`;
@@ -109,8 +268,8 @@ wss.on('connection', (ws: WebSocket) => {
             id: validPlayerId,
             name: msg.name || 'Jogador 1',
             playerIndex: 1,
-            x: 160,
-            y: 480,
+            x: 7 * 32,
+            y: 4 * 32, // Sala 1
             facing: 'down',
             isMoving: false,
             isRunning: false,
@@ -138,9 +297,9 @@ wss.on('connection', (ws: WebSocket) => {
               passwordEntered: false,
               mainGateProgress: 0,
             },
-            antonio: {
-              x: 1000,
-              y: 700,
+            solange: {
+              x: 22 * 32,
+              y: 27 * 32, // Sala dos Professores!
               state: 'PATROL',
               facing: 'down',
             },
@@ -152,7 +311,7 @@ wss.on('connection', (ws: WebSocket) => {
             JSON.stringify({
               type: 'ROOM_CREATED',
               roomCode: code,
-              playerId,
+              playerId: validPlayerId,
               playerIndex: 1,
             })
           );
@@ -192,8 +351,8 @@ wss.on('connection', (ws: WebSocket) => {
             id: validJoinPlayerId,
             name: msg.name || 'Jogador 2',
             playerIndex: 2,
-            x: 200,
-            y: 480,
+            x: 23 * 32,
+            y: 34 * 32, // Refeitório
             facing: 'down',
             isMoving: false,
             isRunning: false,
@@ -216,16 +375,15 @@ wss.on('connection', (ws: WebSocket) => {
             })
           );
 
-          // Notify existing players
           broadcastToRoom(room, {
             type: 'PLAYER_JOINED',
-            playerId,
+            playerId: validJoinPlayerId,
             name: player.name,
             playerIndex: 2,
             playersCount: room.players.size,
           });
 
-          // Check if ready to start 5s countdown
+          // If 2 players, start countdown
           if (room.players.size === 2 && room.status === 'waiting') {
             room.status = 'countdown';
             room.countdown = 5;
@@ -247,7 +405,6 @@ wss.on('connection', (ws: WebSocket) => {
                   missionState: room.missionState,
                 });
 
-                // Start authoritative 15-minute sync timer
                 room.gameLoopTimer = setInterval(() => {
                   room.gameTimeRemaining -= 1;
                   if (room.gameTimeRemaining <= 0) {
@@ -288,7 +445,6 @@ wss.on('connection', (ws: WebSocket) => {
             player.isDowned = msg.isDowned || false;
             player.lastPing = Date.now();
 
-            // Broadcast to other player
             broadcastToRoom(
               room,
               {
@@ -306,6 +462,23 @@ wss.on('connection', (ws: WebSocket) => {
               },
               playerId
             );
+
+            // Forward mini telemetry to paired controller if connected
+            for (const sess of controllerSessions.values()) {
+              if (sess.playerId === playerId && sess.ws && sess.ws.readyState === WebSocket.OPEN) {
+                sess.ws.send(
+                  JSON.stringify({
+                    type: 'CONTROLLER_TELEMETRY',
+                    stamina: msg.stamina ?? 100,
+                    isHiding: player.isHiding,
+                    isDowned: player.isDowned,
+                    heldItem: msg.heldItem ?? null,
+                    noiseLevel: msg.noiseLevel ?? 0,
+                    zone: msg.zone || '',
+                  })
+                );
+              }
+            }
           }
           break;
         }
@@ -315,7 +488,6 @@ wss.on('connection', (ws: WebSocket) => {
           const room = rooms.get(currentRoomCode);
           if (!room) return;
 
-          // Broadcast noise event to room
           broadcastToRoom(room, {
             type: 'SOUND_BROADCAST',
             sourcePlayerId: playerId,
@@ -328,13 +500,13 @@ wss.on('connection', (ws: WebSocket) => {
           break;
         }
 
+        case 'SOLANGE_HOST_SYNC':
         case 'ANTONIO_HOST_SYNC': {
-          // Host player calculates Antonio AI and broadcasts authoritative state
           if (!currentRoomCode || !playerId) return;
           const room = rooms.get(currentRoomCode);
           if (!room || room.hostId !== playerId) return;
 
-          room.antonio = {
+          room.solange = {
             x: msg.x,
             y: msg.y,
             state: msg.state,
@@ -346,8 +518,8 @@ wss.on('connection', (ws: WebSocket) => {
           broadcastToRoom(
             room,
             {
-              type: 'ANTONIO_UPDATE',
-              antonio: room.antonio,
+              type: 'SOLANGE_UPDATE',
+              solange: room.solange,
             },
             playerId
           );
@@ -402,14 +574,13 @@ wss.on('connection', (ws: WebSocket) => {
             downedPlayerId: playerId,
           });
 
-          // Check if both players are downed
           const allDown = Array.from(room.players.values()).every((p) => p.isDowned);
           if (allDown && room.status === 'playing') {
             room.status = 'gameover';
             broadcastToRoom(room, {
               type: 'MATCH_ENDED',
               reason: 'CAPTURED',
-              message: 'Antônio capturou os dois jogadores!',
+              message: 'Solange capturou os dois jogadores!',
             });
           }
           break;
@@ -444,6 +615,29 @@ wss.on('connection', (ws: WebSocket) => {
   });
 
   ws.on('close', () => {
+    // If it's a tablet controller socket disconnecting
+    if (isControllerSocket && controllerCodeAssigned) {
+      const session = controllerSessions.get(controllerCodeAssigned);
+      if (session) {
+        const room = rooms.get(session.roomCode);
+        if (room) {
+          const player = room.players.get(session.playerId);
+          if (player && player.ws.readyState === WebSocket.OPEN) {
+            player.ws.send(
+              JSON.stringify({
+                type: 'CONTROL_DISCONNECTED',
+                playerIndex: session.playerIndex,
+                message: 'Controle remoto desconectado.',
+              })
+            );
+          }
+        }
+        controllerSessions.delete(controllerCodeAssigned);
+      }
+      return;
+    }
+
+    // Normal player disconnect
     if (currentRoomCode && playerId) {
       const room = rooms.get(currentRoomCode);
       if (room) {
@@ -458,7 +652,6 @@ wss.on('connection', (ws: WebSocket) => {
         if (room.players.size === 0) {
           cleanUpRoom(currentRoomCode);
         } else {
-          // If host left, elect new host
           if (room.hostId === playerId) {
             const nextHost = room.players.keys().next().value;
             if (nextHost) {
@@ -475,7 +668,6 @@ wss.on('connection', (ws: WebSocket) => {
   });
 });
 
-// Vite middleware in dev or static files in production
 async function startServer() {
   const isProduction = process.env.NODE_ENV === 'production';
 

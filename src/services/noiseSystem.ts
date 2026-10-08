@@ -91,24 +91,24 @@ class NoiseSystem {
   }
 
   /**
-   * Evaluates if Antonio can hear any active noise.
-   * If yes, returns the approximate location (with noise jitter so Antonio never has pinpoint coordinates).
+   * Evaluates if Solange can hear any active noise.
+   * If yes, returns the approximate location (with noise jitter so Solange never has pinpoint coordinates).
    */
   public checkHearing(
-    antonioX: number,
-    antonioY: number
+    solangeX: number,
+    solangeY: number
   ): { heard: boolean; approxX: number; approxY: number; category: string } | null {
     const now = Date.now();
     for (const noise of this.activeNoises) {
       // Ignore if noise is expired
       if (now - noise.createdAt > noise.duration) continue;
 
-      const dx = antonioX - noise.x;
-      const dy = antonioY - noise.y;
+      const dx = solangeX - noise.x;
+      const dy = solangeY - noise.y;
       const dist = Math.hypot(dx, dy);
 
       if (dist <= noise.radius) {
-        // Antônio hears it! Add realistic directional jitter (30 to 60 pixels of fuzziness)
+        // Solange hears it! Add realistic directional jitter (25 to 60 pixels of fuzziness)
         const jitterAngle = Math.random() * Math.PI * 2;
         const jitterDistance = 25 + Math.random() * 45;
         const approxX = noise.x + Math.cos(jitterAngle) * jitterDistance;

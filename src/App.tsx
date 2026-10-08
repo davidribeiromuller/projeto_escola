@@ -16,16 +16,31 @@ import {
   AlertTriangle,
   DoorOpen,
   Volume2,
+  Smartphone,
 } from 'lucide-react';
 import { multiplayerService } from './services/multiplayer';
 import { audioSystem } from './services/audioSystem';
 import { GameCanvas } from './game/GameCanvas';
 import { HowToPlayModal } from './components/HowToPlayModal';
 import { FirebaseModal } from './components/FirebaseModal';
+import { RemoteControllerPage } from './components/RemoteControllerPage';
+import { TabletPairingModal } from './components/TabletPairingModal';
 
 type AppScreen = 'menu' | 'lobby' | 'game' | 'gameover' | 'victory';
 
 export default function App() {
+  // Mobile / Tablet Remote Controller Page route check (e.g. /controle, /controle/7K4P9X, or ?mode=controle)
+  const urlParams = new URLSearchParams(window.location.search);
+  const pathParts = window.location.pathname.split('/').filter(Boolean);
+  const isControllerMode =
+    urlParams.get('mode') === 'controle' ||
+    pathParts[0] === 'controle' ||
+    window.location.pathname.startsWith('/controle');
+
+  if (isControllerMode) {
+    return <RemoteControllerPage />;
+  }
+
   const [screen, setScreen] = useState<AppScreen>('menu');
   const [playerName, setPlayerName] = useState<string>('Aluno ' + Math.floor(10 + Math.random() * 89));
   const [inputRoomCode, setInputRoomCode] = useState<string>('');
@@ -38,9 +53,11 @@ export default function App() {
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const [partnerLeftMessage, setPartnerLeftMessage] = useState<string | null>(null);
 
-  // Modals
+  // Modals & Tablet Controller
   const [showHowToPlay, setShowHowToPlay] = useState<boolean>(false);
   const [showFirebaseModal, setShowFirebaseModal] = useState<boolean>(false);
+  const [showTabletModal, setShowTabletModal] = useState<boolean>(false);
+  const [isTabletConnected, setIsTabletConnected] = useState<boolean>(false);
 
   // End game stats
   const [gameOverReason, setGameOverReason] = useState<string>('');
@@ -87,12 +104,22 @@ export default function App() {
       setErrorMessage(data.message);
     };
 
+    const onControlConnected = () => {
+      setIsTabletConnected(true);
+    };
+
+    const onControlDisconnected = () => {
+      setIsTabletConnected(false);
+    };
+
     multiplayerService.on('ROOM_CREATED', onRoomCreated);
     multiplayerService.on('ROOM_JOINED', onRoomJoined);
     multiplayerService.on('PLAYER_JOINED', onPlayerJoined);
     multiplayerService.on('PLAYER_LEFT', onPlayerLeft);
     multiplayerService.on('COUNTDOWN_TICK', onCountdownTick);
     multiplayerService.on('MATCH_STARTED', onMatchStarted);
+    multiplayerService.on('CONTROL_CONNECTED', onControlConnected);
+    multiplayerService.on('CONTROL_DISCONNECTED', onControlDisconnected);
     multiplayerService.on('ERROR', onError);
 
     return () => {
@@ -102,6 +129,8 @@ export default function App() {
       multiplayerService.off('PLAYER_LEFT', onPlayerLeft);
       multiplayerService.off('COUNTDOWN_TICK', onCountdownTick);
       multiplayerService.off('MATCH_STARTED', onMatchStarted);
+      multiplayerService.off('CONTROL_CONNECTED', onControlConnected);
+      multiplayerService.off('CONTROL_DISCONNECTED', onControlDisconnected);
       multiplayerService.off('ERROR', onError);
     };
   }, []);
@@ -144,13 +173,13 @@ export default function App() {
           {/* Logo & Title */}
           <div className="space-y-2">
             <div className="inline-flex items-center gap-2 bg-red-950/40 border border-red-900/60 px-3 py-1 rounded text-red-400 text-xs tracking-widest font-semibold uppercase">
-              <Skull className="w-3.5 h-3.5" /> Jogo de Suspense Cooperativo 2D
+              <Skull className="w-3.5 h-3.5" /> Jogo de Perseguição e Suspense 2D
             </div>
             <h1 className="text-3xl md:text-5xl font-black text-amber-400 tracking-wider drop-shadow-[0_4px_12px_rgba(245,158,11,0.2)]">
-              DEPOIS DA ÚLTIMA AULA
+              FUJA DA SOLANGE!!
             </h1>
             <p className="text-xs md:text-sm text-neutral-400 max-w-md mx-auto leading-relaxed">
-              Presos na escola à noite com Antônio. Movam-se com cautela: ele ouve cada passo seu no escuro.
+              Presos na escola durante a noite. Solange começou na Sala dos Professores e está caçando pelo som dos seus passos!
             </p>
           </div>
 
@@ -205,8 +234,8 @@ export default function App() {
             </div>
           </div>
 
-          {/* Secondary Buttons (How to play & Firebase) */}
-          <div className="flex items-center gap-4 text-xs pt-4">
+          {/* Secondary Buttons (How to play, Firebase & Mobile Controller) */}
+          <div className="flex flex-wrap items-center justify-center gap-3 text-xs pt-3">
             <button
               onClick={() => setShowHowToPlay(true)}
               className="text-neutral-400 hover:text-amber-400 flex items-center gap-1.5 transition cursor-pointer"
@@ -222,6 +251,14 @@ export default function App() {
               <Settings className="w-4 h-4" />
               Configuração Firebase
             </button>
+            <span className="text-neutral-700">•</span>
+            <a
+              href="?mode=controle"
+              className="text-amber-400 hover:text-amber-300 flex items-center gap-1.5 transition underline cursor-pointer"
+            >
+              <Smartphone className="w-4 h-4" />
+              Abrir Gamepad do Tablet
+            </a>
           </div>
         </div>
       )}
@@ -273,6 +310,28 @@ export default function App() {
                   {playersInLobby >= 2 ? 'Conectado' : 'Aguardando...'}
                 </span>
               </div>
+            </div>
+
+            {/* Tablet Pairing Option in Lobby */}
+            <div className="bg-neutral-900/40 p-3 rounded border border-neutral-800 space-y-2">
+              <button
+                onClick={() => setShowTabletModal(true)}
+                className={`w-full py-2.5 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-2 border transition cursor-pointer shadow-md ${
+                  isTabletConnected
+                    ? 'bg-emerald-950/80 border-emerald-600 text-emerald-300 hover:bg-emerald-900/80'
+                    : 'bg-amber-600/90 hover:bg-amber-500 text-black border-amber-500 shadow-amber-900/40 active:scale-[0.98]'
+                }`}
+              >
+                <Smartphone className="w-4 h-4" />
+                <span>
+                  {isTabletConnected
+                    ? `🎮 TABLET CONECTADO (JOGADOR ${playerIndex})`
+                    : 'CONTROLAR PELO TABLET'}
+                </span>
+              </button>
+              <p className="text-[10px] text-neutral-400 text-center">
+                Use o celular ou tablet como controle remoto na mesma partida.
+              </p>
             </div>
 
             {/* Countdown or Waiting Notice */}
@@ -335,11 +394,11 @@ export default function App() {
             <div className="space-y-2">
               <h2 className="text-2xl font-black text-red-500 tracking-wider">DERROTA</h2>
               <p className="text-xs text-neutral-300 leading-relaxed">
-                {gameOverReason || 'Antônio alcançou vocês no escuro dos corredores.'}
+                {gameOverReason || 'Solange alcançou vocês no escuro dos corredores.'}
               </p>
             </div>
             <div className="text-xs text-neutral-500 border-t border-neutral-800 pt-4">
-              Lembre-se: andar agachado e silencioso evita atrair Antônio. Esconda-se em armários quando ouvir passos pesados!
+              Lembre-se: andar silenciosamente evita atrair Solange. Esconda-se em armários quando ouvir passos pesados!
             </div>
             <button
               onClick={handleBackToMenu}
@@ -359,7 +418,7 @@ export default function App() {
             <div className="space-y-2">
               <h2 className="text-2xl font-black text-emerald-400 tracking-wider">VOCÊS ESCAPARAM!</h2>
               <p className="text-xs text-neutral-300 leading-relaxed">
-                Vocês completaram as tarefas na escola e abriram o portão principal a tempo! Antônio ficou para trás na escuridão.
+                Vocês completaram as tarefas na escola e abriram o portão principal a tempo! Solange ficou para trás na escuridão.
               </p>
             </div>
             <div className="flex items-center justify-center gap-2 text-xs text-emerald-500/80 bg-emerald-950/40 p-3 rounded border border-emerald-800/40">
@@ -378,12 +437,18 @@ export default function App() {
 
       {/* Footer Info */}
       <footer className="relative z-10 text-center py-3 text-[11px] text-neutral-500 border-t border-neutral-900/80">
-        <span>Depois da Última Aula • Pixel Art Horror 2D Multiplayer • 2 Jogadores</span>
+        <span>FUJA DA SOLANGE!! • Pixel Art Horror 2D Multiplayer • 2 Jogadores</span>
       </footer>
 
       {/* Modals */}
       {showHowToPlay && <HowToPlayModal onClose={() => setShowHowToPlay(false)} />}
       {showFirebaseModal && <FirebaseModal onClose={() => setShowFirebaseModal(false)} />}
+      {showTabletModal && (
+        <TabletPairingModal
+          playerIndex={playerIndex}
+          onClose={() => setShowTabletModal(false)}
+        />
+      )}
     </div>
   );
 }

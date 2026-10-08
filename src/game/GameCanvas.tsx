@@ -1,6 +1,17 @@
 /**
- * Core 2D Pixel Art Canvas Game Component
- * Renders the top-down retro school, players, Antonio stalker, lighting, and sound waves.
+ * Core 2D Pixel Art Canvas Game Component for "FUJA DA SOLANGE!!"
+ * 
+ * Features:
+ * - Pre-Match Blueprint Map for 5-8 seconds
+ * - Solange AI with A* Pathfinding starting strictly in Sala dos Professores
+ * - Unified InputManager supporting both Keyboard and Tablet Virtual Controller
+ * - Minimalist UI layout:
+ *   - Top: "FUJA DA SOLANGE!!"
+ *   - Top-Left: OBJETIVOS
+ *   - Top-Right: TEMPO (14:32) + [Controlar pelo Tablet]
+ *   - Bottom-Left: Estado do Jogador (Andando / Correndo / Escondido) + Estamina
+ *   - Bottom-Right: MINIMAPA CIRCULAR (occluded by walls!)
+ *   - Sound Pulse indicator ("Você está fazendo barulho")
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -15,13 +26,20 @@ import {
   TILE_SIZE,
   TileType,
   SCHOOL_ZONES,
+  SOLANGE_INITIAL_SPAWN,
+  PLAYER_SPAWNS,
 } from './mapData';
 import { SpriteRegistry } from './spriteGenerator';
-import { AntonioAI, AntonioState } from './antonioAI';
+import { SolangeAI, SolangeState } from './solangeAI';
 import { lightingSystem, LightSource } from './lightingSystem';
 import { audioSystem } from '../services/audioSystem';
 import { noiseSystem, NoiseEvent } from '../services/noiseSystem';
 import { multiplayerService, RemotePlayer, MissionStateNetwork } from '../services/multiplayer';
+import { CircularMinimap } from './CircularMinimap';
+import { PreMatchMapModal } from './PreMatchMapModal';
+import { TabletPairingModal } from '../components/TabletPairingModal';
+import { inputManager } from './InputManager';
+import { Volume2, Smartphone } from 'lucide-react';
 
 interface GameCanvasProps {
   playerIndex: 1 | 2;
@@ -42,25 +60,37 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  // Pre-Match Map Screen State
+  const [showPreMatchMap, setShowPreMatchMap] = useState<boolean>(true);
+
+  // Tablet Pairing Modal State
+  const [showTabletModal, setShowTabletModal] = useState<boolean>(false);
+  const [controllerStatus, setControllerStatus] = useState<'OFFLINE' | 'ONLINE' | 'DISCONNECTED'>(
+    multiplayerService.isControllerConnected ? 'ONLINE' : 'OFFLINE'
+  );
+
   // Game World State
   const [map] = useState<number[][]>(() => generateSchoolMap());
   const [items, setItems] = useState<InteractiveItem[]>(() =>
     JSON.parse(JSON.stringify(INITIAL_INTERACTIVE_ITEMS))
   );
 
+  // Initial Player Spawn: Player 1 = Sala 1; Player 2 = Refeitório
+  const initialSpawn = PLAYER_SPAWNS[playerIndex - 1] || PLAYER_SPAWNS[0];
+
   // Local Player State
   const playerRef = useRef({
-    x: playerIndex === 1 ? 22 * TILE_SIZE : 24 * TILE_SIZE,
-    y: 33 * TILE_SIZE,
-    facing: 'up' as 'up' | 'down' | 'left' | 'right',
+    x: initialSpawn.x,
+    y: initialSpawn.y,
+    facing: 'down' as 'up' | 'down' | 'left' | 'right',
     isMoving: false,
     isRunning: false,
     isHiding: false,
     hidingSpotId: null as string | null,
     isDowned: false,
-    stamina: 100, // 0 - 100
+    stamina: 100,
     walkFrame: 0,
-    heldItem: null as string | null, // e.g. 'book_1', 'fuse_1'
+    heldItem: null as string | null,
     collectedClues: [] as string[],
     reviveProgress: 0,
     gateProgressHold: 0,
@@ -70,18 +100,31 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   // Remote Player State
   const remotePlayerRef = useRef<RemotePlayer | null>(null);
 
-  // Antonio AI State
-  const antonioAIRef = useRef<AntonioAI>(new AntonioAI());
-  const remoteAntonioRef = useRef<{
+  // Solange AI State
+  const solangeAIRef = useRef<SolangeAI>(new SolangeAI());
+  const remoteSolangeRef = useRef<{
     x: number;
     y: number;
-    state: AntonioState;
+    state: SolangeState;
     facing: 'up' | 'down' | 'left' | 'right';
   }>({
-    x: 23 * TILE_SIZE,
-    y: 30 * TILE_SIZE,
+    x: SOLANGE_INITIAL_SPAWN.x,
+    y: SOLANGE_INITIAL_SPAWN.y,
     state: 'PATROL',
     facing: 'down',
+  });
+
+  // Minimap Visibility State
+  const [minimapState, setMinimapState] = useState({
+    playerX: initialSpawn.x,
+    playerY: initialSpawn.y,
+    solangeX: SOLANGE_INITIAL_SPAWN.x,
+    solangeY: SOLANGE_INITIAL_SPAWN.y,
+    solangeVisible: false,
+    remoteX: 0,
+    remoteY: 0,
+    remoteVisible: false,
+    isHiding: false,
   });
 
   // Missions & Objectives State
@@ -95,31 +138,28 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     mainGateProgress: 0,
   });
 
-  // Room Lights & Powered wings
+  // Dynamic Room Lights
   const [roomLights, setRoomLights] = useState<LightSource[]>([
-    { x: 23 * TILE_SIZE, y: 32 * TILE_SIZE, radius: 100, intensity: 0.6, flicker: true },
-    { x: 23 * TILE_SIZE, y: 18 * TILE_SIZE, radius: 90, intensity: 0.5, flicker: true },
-    { x: 9 * TILE_SIZE, y: 11 * TILE_SIZE, radius: 80, intensity: 0.4, flicker: false },
-    { x: 38 * TILE_SIZE, y: 10 * TILE_SIZE, radius: 85, intensity: 0.5, flicker: false },
+    { x: 25 * TILE_SIZE, y: 38 * TILE_SIZE, radius: 110, intensity: 0.65, flicker: false },
+    { x: 25 * TILE_SIZE, y: 16 * TILE_SIZE, radius: 120, intensity: 0.6, flicker: false },
+    { x: 25 * TILE_SIZE, y: 9 * TILE_SIZE, radius: 95, intensity: 0.5, flicker: true },
+    { x: 7 * TILE_SIZE, y: 4 * TILE_SIZE, radius: 85, intensity: 0.45, flicker: false },
+    { x: 22 * TILE_SIZE, y: 27 * TILE_SIZE, radius: 85, intensity: 0.5, flicker: false },
   ]);
 
-  // Keys Ref
-  const keysRef = useRef<{ [key: string]: boolean }>({});
   const lastStepSoundTime = useRef<number>(0);
   const [currentPrompt, setCurrentPrompt] = useState<string | null>(null);
   const [currentZone, setCurrentZone] = useState<string>('Entrada Principal');
   const [partnerDowned, setPartnerDowned] = useState<boolean>(false);
-  const [noiseLevel, setNoiseLevel] = useState<number>(0); // 0 to 100 for HUD gauge
+  const [noiseLevel, setNoiseLevel] = useState<number>(0);
   const [staminaLevel, setStaminaLevel] = useState<number>(100);
+
+  const [playerActionState, setPlayerActionState] = useState<string>('Parado');
 
   // Match Timer (15 minutes = 900s)
   const [timeRemaining, setTimeRemaining] = useState<number>(900);
   const [isPaused, setIsPaused] = useState<boolean>(false);
 
-  // Custom frame file input ref
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  // Sound and Sprite Setup
   useEffect(() => {
     audioSystem.startAmbientLoop();
     return () => {
@@ -127,31 +167,18 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     };
   }, []);
 
-  // Keyboard Event Listeners
+  // Keyboard Escape listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      const code = e.code.toLowerCase();
-      keysRef.current[code] = true;
-
       if (e.key === 'Escape') {
         setIsPaused((p) => !p);
       }
     };
-
-    const handleKeyUp = (e: KeyboardEvent) => {
-      const code = e.code.toLowerCase();
-      keysRef.current[code] = false;
-    };
-
     window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-    };
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Multiplayer Listeners
+  // Multiplayer Listeners & Controller Input Routing
   useEffect(() => {
     const onRemotePlayerUpdate = (data: any) => {
       remotePlayerRef.current = {
@@ -173,9 +200,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       noiseSystem.emitNoise(data.x, data.y, data.category, data.sourcePlayerId);
     };
 
-    const onAntonioUpdate = (data: any) => {
+    const onSolangeUpdate = (data: any) => {
       if (!isHost) {
-        remoteAntonioRef.current = data.antonio;
+        remoteSolangeRef.current = data.solange || data.antonio;
       }
     };
 
@@ -201,52 +228,77 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       if (data.reason === 'VICTORY') {
         onVictory();
       } else {
-        onGameOver(data.message || 'Vocês foram capturados!');
+        onGameOver(data.message || 'Solange pegou vocês no corredor!');
       }
+    };
+
+    // Remote Tablet Controller events
+    const onControlConnected = () => {
+      setControllerStatus('ONLINE');
+    };
+
+    const onControlDisconnected = () => {
+      setControllerStatus('DISCONNECTED');
+      inputManager.setRemoteDisconnected();
+    };
+
+    const onControlInput = (data: any) => {
+      inputManager.setRemoteInput(data.dx, data.dy, data.run, data.interact, data.hide);
     };
 
     multiplayerService.on('REMOTE_PLAYER_UPDATE', onRemotePlayerUpdate);
     multiplayerService.on('SOUND_BROADCAST', onSoundBroadcast);
-    multiplayerService.on('ANTONIO_UPDATE', onAntonioUpdate);
+    multiplayerService.on('SOLANGE_UPDATE', onSolangeUpdate);
+    multiplayerService.on('ANTONIO_UPDATE', onSolangeUpdate);
     multiplayerService.on('MISSION_STATE_UPDATE', onMissionUpdate);
     multiplayerService.on('PLAYER_DOWNED_EVENT', onPlayerDownedEvent);
     multiplayerService.on('PLAYER_REVIVED_EVENT', onPlayerRevivedEvent);
     multiplayerService.on('MATCH_ENDED', onMatchEnded);
+    multiplayerService.on('CONTROL_CONNECTED', onControlConnected);
+    multiplayerService.on('CONTROL_DISCONNECTED', onControlDisconnected);
+    multiplayerService.on('CONTROL_INPUT', onControlInput);
 
     return () => {
       multiplayerService.off('REMOTE_PLAYER_UPDATE', onRemotePlayerUpdate);
       multiplayerService.off('SOUND_BROADCAST', onSoundBroadcast);
-      multiplayerService.off('ANTONIO_UPDATE', onAntonioUpdate);
+      multiplayerService.off('SOLANGE_UPDATE', onSolangeUpdate);
+      multiplayerService.off('ANTONIO_UPDATE', onSolangeUpdate);
       multiplayerService.off('MISSION_STATE_UPDATE', onMissionUpdate);
       multiplayerService.off('PLAYER_DOWNED_EVENT', onPlayerDownedEvent);
       multiplayerService.off('PLAYER_REVIVED_EVENT', onPlayerRevivedEvent);
       multiplayerService.off('MATCH_ENDED', onMatchEnded);
+      multiplayerService.off('CONTROL_CONNECTED', onControlConnected);
+      multiplayerService.off('CONTROL_DISCONNECTED', onControlDisconnected);
+      multiplayerService.off('CONTROL_INPUT', onControlInput);
     };
   }, [isHost, onGameOver, onVictory]);
 
   // Match 15:00 Timer
   useEffect(() => {
+    if (showPreMatchMap) return;
+
     const timer = setInterval(() => {
       setTimeRemaining((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          onGameOver('O tempo da escola esgotou! A escola foi trancada para sempre.');
+          onGameOver('O tempo acabou! A escola trancou as portas para sempre.');
           return 0;
         }
         return prev - 1;
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [onGameOver]);
+  }, [onGameOver, showPreMatchMap]);
 
   // Main 60 FPS Game Loop
   useEffect(() => {
     let animId: number;
     let lastTime = performance.now();
     let networkSyncTimer = 0;
+    let minimapSyncTimer = 0;
 
     const sprites = SpriteRegistry.getInstance();
-    const antonioAI = antonioAIRef.current;
+    const solangeAI = solangeAIRef.current;
 
     const gameLoop = (currentTime: number) => {
       const deltaMs = Math.min(currentTime - lastTime, 100);
@@ -267,36 +319,30 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
       const p = playerRef.current;
       const remote = remotePlayerRef.current;
-      const keys = keysRef.current;
 
-      // 1. Process Local Player Input & Movement
-      if (!p.isDowned && !p.isHiding && !isPaused) {
-        let dx = 0;
-        let dy = 0;
+      // 1. Unified Input Processing (Keyboard OR Tablet Controller)
+      const input = inputManager.getInputState();
 
-        if (keys['keyw'] || keys['arrowup']) dy -= 1;
-        if (keys['keys'] || keys['arrowdown']) dy += 1;
-        if (keys['keya'] || keys['arrowleft']) dx -= 1;
-        if (keys['keyd'] || keys['arrowright']) dx += 1;
+      if (!p.isDowned && !p.isHiding && !isPaused && !showPreMatchMap) {
+        const dx = input.dx;
+        const dy = input.dy;
 
-        const isRunning = (keys['shiftleft'] || keys['shiftright']) && p.stamina > 10 && (dx !== 0 || dy !== 0);
+        const isRunning = input.isRunning && p.stamina > 10 && (dx !== 0 || dy !== 0);
         p.isRunning = isRunning;
 
-        // Stamina management
         if (isRunning) {
-          p.stamina = Math.max(0, p.stamina - (deltaMs / 1000) * 25);
+          p.stamina = Math.max(0, p.stamina - (deltaMs / 1000) * 26);
         } else {
           p.stamina = Math.min(100, p.stamina + (deltaMs / 1000) * 16);
         }
         setStaminaLevel(Math.round(p.stamina));
 
-        const speed = isRunning ? 160 : 92;
+        const speed = isRunning ? 165 : 90;
 
         if (dx !== 0 || dy !== 0) {
           p.isMoving = true;
-          const length = Math.hypot(dx, dy);
-          const vx = (dx / length) * speed * (deltaMs / 1000);
-          const vy = (dy / length) * speed * (deltaMs / 1000);
+          const vx = dx * speed * (deltaMs / 1000);
+          const vy = dy * speed * (deltaMs / 1000);
 
           if (Math.abs(dx) > Math.abs(dy)) {
             p.facing = dx > 0 ? 'right' : 'left';
@@ -304,23 +350,20 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
             p.facing = dy > 0 ? 'down' : 'up';
           }
 
-          // Wall Collision Checking
           const newX = p.x + vx;
           const newY = p.y + vy;
 
           if (!isSolid(newX, p.y, map)) p.x = newX;
           if (!isSolid(p.x, newY, map)) p.y = newY;
 
-          // Sound emission on steps
-          const stepInterval = isRunning ? 280 : 440;
+          // Steps noise
+          const stepInterval = isRunning ? 260 : 430;
           if (currentTime - lastStepSoundTime.current > stepInterval) {
             lastStepSoundTime.current = currentTime;
             p.walkFrame = (p.walkFrame + 1) % 4;
 
-            // Audio synth
             audioSystem.playFootstep(isRunning);
 
-            // Emit noise wave
             const noise = noiseSystem.emitNoise(
               p.x,
               p.y,
@@ -334,7 +377,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
               noise.radius,
               noise.category
             );
-            setNoiseLevel(isRunning ? 85 : 30);
+            setNoiseLevel(isRunning ? 90 : 35);
           }
         } else {
           p.isMoving = false;
@@ -345,7 +388,18 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         setNoiseLevel(0);
       }
 
-      // Check current zone name
+      // HUD action state text
+      if (p.isHiding) {
+        setPlayerActionState('Escondido no Armário');
+      } else if (p.isRunning && p.isMoving) {
+        setPlayerActionState('Correndo (Ruidoso)');
+      } else if (p.isMoving) {
+        setPlayerActionState('Andando (Silencioso)');
+      } else {
+        setPlayerActionState('Parado');
+      }
+
+      // Zone name update
       const playerTileX = Math.floor(p.x / TILE_SIZE);
       const playerTileY = Math.floor(p.y / TILE_SIZE);
       const activeZone = SCHOOL_ZONES.find(
@@ -359,21 +413,20 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         setCurrentZone(activeZone.name);
       }
 
-      // 2. Interaction Checks [E]
+      // 2. Interaction Checks
       const nearbyItem = items.find((item) => {
         const dist = Math.hypot(p.x - (item.x + item.width / 2), p.y - (item.y + item.height / 2));
         return dist < 42;
       });
 
-      // Teammate revive check
       const distToRemote = remote
         ? Math.hypot(p.x - remote.x, p.y - remote.y)
         : Infinity;
       const canReviveTeammate = remote && remote.isDowned && distToRemote < 50;
 
       if (canReviveTeammate) {
-        setCurrentPrompt('Segure [E] para reanimar seu parceiro');
-        if (keys['keye']) {
+        setCurrentPrompt('Segure [E] / [INTERAGIR] para reanimar seu parceiro');
+        if (input.isInteracting) {
           p.reviveProgress += (deltaMs / 1000) * 40;
           if (p.reviveProgress >= 100) {
             p.reviveProgress = 0;
@@ -385,31 +438,31 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       } else if (nearbyItem) {
         if (nearbyItem.type === 'locker') {
-          setCurrentPrompt(p.isHiding ? 'Pressione [E] para sair do armário' : 'Pressione [E] para esconder-se');
+          setCurrentPrompt(p.isHiding ? 'Pressione [E] / [INTERAGIR] para sair' : 'Pressione [E] / [INTERAGIR] para se esconder');
         } else if (nearbyItem.type === 'book' && !nearbyItem.collected) {
-          setCurrentPrompt(`Pressione [E] para pegar ${nearbyItem.label}`);
+          setCurrentPrompt(`Pressione [E] / [INTERAGIR] para pegar ${nearbyItem.label}`);
         } else if (nearbyItem.type === 'book_drop') {
           setCurrentPrompt(
             p.heldItem?.startsWith('book')
-              ? 'Pressione [E] para devolver livro à estante'
+              ? 'Pressione [E] / [INTERAGIR] para devolver livro à estante'
               : `Estante da Biblioteca (${missionState.booksCollected}/3 livros devolvidos)`
           );
         } else if (nearbyItem.type === 'fuse' && !nearbyItem.collected) {
-          setCurrentPrompt(`Pressione [E] para pegar ${nearbyItem.label}`);
+          setCurrentPrompt(`Pressione [E] / [INTERAGIR] para pegar ${nearbyItem.label}`);
         } else if (nearbyItem.type === 'fuse_box' && !nearbyItem.completed) {
           setCurrentPrompt(
             p.heldItem?.startsWith('fuse')
-              ? 'Pressione [E] para instalar fusível no quadro'
+              ? 'Pressione [E] / [INTERAGIR] para instalar fusível'
               : 'Painel elétrico sem fusível'
           );
         } else if (nearbyItem.type === 'clue' && !nearbyItem.collected) {
-          setCurrentPrompt(`Pressione [E] para ler ${nearbyItem.label}`);
+          setCurrentPrompt(`Pressione [E] / [INTERAGIR] para ler ${nearbyItem.label}`);
         } else if (nearbyItem.type === 'computer') {
           setCurrentPrompt(
             missionState.passwordEntered
-              ? 'Terminal Desbloqueado - Trava de emergência liberada!'
+              ? 'Terminal Desbloqueado - Saída liberada!'
               : p.collectedClues.length >= 3
-              ? 'Pressione [E] para digitar a senha completa'
+              ? 'Pressione [E] / [INTERAGIR] para digitar a senha completa'
               : `Terminal da Diretoria (Pistas: ${p.collectedClues.length}/3)`
           );
         } else if (nearbyItem.type === 'main_gate') {
@@ -418,10 +471,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
             missionState.fusesInstalled >= 3 &&
             missionState.passwordEntered;
           if (!allMissionsDone) {
-            setCurrentPrompt('Portão trancado por correntes! Complete as missões primeiro.');
+            setCurrentPrompt('Portão trancado por correntes! Complete todas as missões primeiro.');
           } else {
             setCurrentPrompt(
-              `Segure [E] para forçar o portão de saída! (${Math.round(missionState.mainGateProgress)}%)`
+              `Segure [E] / [INTERAGIR] para forçar o portão! (${Math.round(missionState.mainGateProgress)}%)`
             );
           }
         }
@@ -429,8 +482,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         setCurrentPrompt(null);
       }
 
-      // Handle Key E Press
-      if (keys['keye'] && !p.isDowned) {
+      // Handle Interaction Press
+      if (input.isInteracting && !p.isDowned && !showPreMatchMap) {
         if (nearbyItem) {
           if (nearbyItem.type === 'locker' && !p._eDebounce) {
             p._eDebounce = true;
@@ -462,7 +515,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
             const noise = noiseSystem.emitNoise(p.x, p.y, 'fuse', multiplayerService.playerId);
             multiplayerService.sendSoundEmitted(p.x, p.y, noise.intensity, noise.radius, 'fuse');
             multiplayerService.sendMissionAction('FUSE_INSTALLED');
-            // Add light
             setRoomLights((prev) => [
               ...prev,
               { x: nearbyItem.x, y: nearbyItem.y, radius: 140, intensity: 0.7, flicker: false },
@@ -491,49 +543,49 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           }
         }
       } else {
-        (p as any)._eDebounce = false;
+        p._eDebounce = false;
       }
 
-      // 3. Update Antonio AI (Authoritative on Host, Synced to Guest)
+      // 3. Update Solange AI
       noiseSystem.update();
 
-      let activeAntonioX = antonioAI.x;
-      let activeAntonioY = antonioAI.y;
-      let activeAntonioFacing = antonioAI.facing;
-      let activeAntonioState = antonioAI.state;
+      let activeSolangeX = solangeAI.x;
+      let activeSolangeY = solangeAI.y;
+      let activeSolangeFacing = solangeAI.facing;
+      let activeSolangeState = solangeAI.state;
 
       if (isHost) {
-        // Build targets array
-        const targets = [
-          {
-            id: multiplayerService.playerId,
-            x: p.x,
-            y: p.y,
-            isHiding: p.isHiding,
-            isDowned: p.isDowned,
-          },
-        ];
-        if (remote) {
-          targets.push({
-            id: remote.id,
-            x: remote.x,
-            y: remote.y,
-            isHiding: remote.isHiding,
-            isDowned: remote.isDowned,
-          });
+        if (!showPreMatchMap) {
+          const targets = [
+            {
+              id: multiplayerService.playerId,
+              x: p.x,
+              y: p.y,
+              isHiding: p.isHiding,
+              isDowned: p.isDowned,
+            },
+          ];
+          if (remote) {
+            targets.push({
+              id: remote.id,
+              x: remote.x,
+              y: remote.y,
+              isHiding: remote.isHiding,
+              isDowned: remote.isDowned,
+            });
+          }
+
+          const heardNoise = noiseSystem.checkHearing(solangeAI.x, solangeAI.y);
+          solangeAI.update(deltaMs, targets, map, heardNoise);
         }
 
-        const heardNoise = noiseSystem.checkHearing(antonioAI.x, antonioAI.y);
-        antonioAI.update(deltaMs, targets, map, heardNoise);
+        activeSolangeX = solangeAI.x;
+        activeSolangeY = solangeAI.y;
+        activeSolangeFacing = solangeAI.facing;
+        activeSolangeState = solangeAI.state;
 
-        activeAntonioX = antonioAI.x;
-        activeAntonioY = antonioAI.y;
-        activeAntonioFacing = antonioAI.facing;
-        activeAntonioState = antonioAI.state;
-
-        // Check capture collision with local host player
-        if (!p.isHiding && !p.isDowned) {
-          const distToP = Math.hypot(p.x - antonioAI.x, p.y - antonioAI.y);
+        if (!p.isHiding && !p.isDowned && !showPreMatchMap) {
+          const distToP = Math.hypot(p.x - solangeAI.x, p.y - solangeAI.y);
           if (distToP < 28) {
             p.isDowned = true;
             multiplayerService.sendPlayerDowned();
@@ -541,15 +593,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           }
         }
       } else {
-        // Guest uses synchronized Antonio
-        activeAntonioX = remoteAntonioRef.current.x;
-        activeAntonioY = remoteAntonioRef.current.y;
-        activeAntonioFacing = remoteAntonioRef.current.facing;
-        activeAntonioState = remoteAntonioRef.current.state;
+        activeSolangeX = remoteSolangeRef.current.x;
+        activeSolangeY = remoteSolangeRef.current.y;
+        activeSolangeFacing = remoteSolangeRef.current.facing;
+        activeSolangeState = remoteSolangeRef.current.state;
 
-        // Check capture collision with guest player
-        if (!p.isHiding && !p.isDowned) {
-          const distToP = Math.hypot(p.x - activeAntonioX, p.y - activeAntonioY);
+        if (!p.isHiding && !p.isDowned && !showPreMatchMap) {
+          const distToP = Math.hypot(p.x - activeSolangeX, p.y - activeSolangeY);
           if (distToP < 28) {
             p.isDowned = true;
             multiplayerService.sendPlayerDowned();
@@ -558,11 +608,32 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       }
 
-      // Dynamic Heartbeat sound based on Antonio distance
-      const distToAntonio = Math.hypot(p.x - activeAntonioX, p.y - activeAntonioY);
-      audioSystem.setHeartbeatProximity(distToAntonio, 420);
+      // Dynamic Heartbeat based on distance to Solange
+      const distToSolange = Math.hypot(p.x - activeSolangeX, p.y - activeSolangeY);
+      audioSystem.setHeartbeatProximity(distToSolange, 420);
 
-      // 4. Network Sync (30 times/sec throttled)
+      // Line of sight check for Minimap (walls block view!)
+      const distToS = Math.hypot(p.x - activeSolangeX, p.y - activeSolangeY);
+      const isSolangeInSight = distToS <= 140 && !p.isHiding && solangeAI.hasClearLineOfSight(p.x, p.y, activeSolangeX, activeSolangeY, map);
+      const isRemoteInSight = remote && !p.isHiding && !remote.isHiding && distToRemote <= 140 && solangeAI.hasClearLineOfSight(p.x, p.y, remote.x, remote.y, map);
+
+      minimapSyncTimer += deltaMs;
+      if (minimapSyncTimer >= 100) {
+        minimapSyncTimer = 0;
+        setMinimapState({
+          playerX: p.x,
+          playerY: p.y,
+          solangeX: activeSolangeX,
+          solangeY: activeSolangeY,
+          solangeVisible: Boolean(isSolangeInSight),
+          remoteX: remote ? remote.x : 0,
+          remoteY: remote ? remote.y : 0,
+          remoteVisible: Boolean(isRemoteInSight),
+          isHiding: p.isHiding,
+        });
+      }
+
+      // 4. Network Sync (30 Hz)
       networkSyncTimer += deltaMs;
       if (networkSyncTimer >= 40) {
         networkSyncTimer = 0;
@@ -574,17 +645,23 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           p.isRunning,
           p.isHiding,
           p.hidingSpotId,
-          p.isDowned
+          p.isDowned,
+          {
+            stamina: p.stamina,
+            heldItem: p.heldItem,
+            noiseLevel: p.isRunning ? 80 : p.isMoving ? 25 : 0,
+            zone: currentZone,
+          }
         );
 
         if (isHost) {
-          multiplayerService.sendAntonioHostSync(
-            antonioAI.x,
-            antonioAI.y,
-            antonioAI.state,
-            antonioAI.facing,
-            antonioAI.targetX,
-            antonioAI.targetY
+          multiplayerService.sendSolangeHostSync(
+            solangeAI.x,
+            solangeAI.y,
+            solangeAI.state,
+            solangeAI.facing,
+            solangeAI.targetX,
+            solangeAI.targetY
           );
         }
       }
@@ -595,11 +672,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       let cameraX = p.x - screenWidth / 2;
       let cameraY = p.y - screenHeight / 2;
 
-      // Clamp camera
       cameraX = Math.max(0, Math.min(MAP_WIDTH - screenWidth, cameraX));
       cameraY = Math.max(0, Math.min(MAP_HEIGHT - screenHeight, cameraY));
 
-      // 6. RENDER BACKGROUND & MAP TILES
+      // 6. RENDER BACKGROUND & TILES
       ctx.fillStyle = '#090d16';
       ctx.fillRect(0, 0, screenWidth, screenHeight);
 
@@ -618,6 +694,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           if (tile === TileType.FLOOR_WOOD) texKey = 'floor_wood';
           else if (tile === TileType.FLOOR_CARPET) texKey = 'floor_carpet';
           else if (tile === TileType.WALL_SOLID || tile === TileType.WALL_BORDER) texKey = 'wall_solid';
+          else if (tile === TileType.PATIO_TILES) texKey = 'floor_tile';
 
           const tex = sprites.tileTextures.get(texKey);
           if (tex) {
@@ -629,7 +706,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       }
 
-      // 7. RENDER INTERACTIVE ITEMS
+      // 7. RENDER ITEMS
       items.forEach((item) => {
         if (item.collected) return;
         const ix = item.x - cameraX;
@@ -644,7 +721,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
             ctx.fillRect(ix, iy, item.width, item.height);
           }
 
-          // Subtle pulse ring for uncollected quest items
           if (item.type === 'book' || item.type === 'fuse' || item.type === 'clue') {
             const pulse = (Math.sin(Date.now() / 200) + 1) * 2;
             ctx.strokeStyle = 'rgba(254, 240, 138, 0.4)';
@@ -654,12 +730,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       });
 
-      // 8. RENDER NOISE RIPPLES (Sonic waves expanding on floor)
+      // 8. RENDER NOISE RIPPLES
       const noises = noiseSystem.getActiveNoises();
       noises.forEach((noise) => {
         const nx = noise.x - cameraX;
         const ny = noise.y - cameraY;
-        const progress = (Date.now() - noise.createdAt) / noise.duration; // 0 to 1
+        const progress = (Date.now() - noise.createdAt) / noise.duration;
         if (progress >= 1) return;
 
         const currentRadius = noise.radius * progress;
@@ -686,14 +762,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
         if (spriteFrame) {
           if (remote.isDowned) {
-            // Downed: rotated / fallen
             ctx.save();
             ctx.translate(rx, ry);
             ctx.rotate(Math.PI / 2);
             ctx.drawImage(spriteFrame.canvas, -16, -16);
             ctx.restore();
 
-            // Help icon
             ctx.fillStyle = '#ef4444';
             ctx.font = 'bold 10px monospace';
             ctx.fillText('SOCORRO!', rx - 24, ry - 22);
@@ -725,39 +799,43 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       }
 
-      // 11. RENDER ANTÔNIO (THE STALKER)
-      const ax = activeAntonioX - cameraX;
-      const ay = activeAntonioY - cameraY;
-      const customImg = sprites.getCustomAntonioImage();
+      // 11. RENDER SOLANGE (THE STALKER)
+      const sx = activeSolangeX - cameraX;
+      const sy = activeSolangeY - cameraY;
+      const sSprites = sprites.solangeSprites;
+      const sFacing = (activeSolangeFacing || 'down') as 'up' | 'down' | 'left' | 'right';
 
-      if (customImg) {
-        // If user loaded custom frames
-        ctx.drawImage(customImg, ax - 18, ay - 21, 36, 42);
+      let sAnimKey: 'idle' | 'walk' | 'run' | 'search' | 'capture' = 'walk';
+      if (activeSolangeState === 'CHASE') {
+        sAnimKey = 'run';
+      } else if (activeSolangeState === 'HEARD_NOISE' || activeSolangeState === 'SEARCH' || activeSolangeState === 'LOST') {
+        sAnimKey = 'search';
+      } else if (p.isDowned || partnerDowned) {
+        sAnimKey = 'capture';
       } else {
-        const aSprites = sprites.antonioSprites;
-        const aFacing = (activeAntonioFacing || 'down') as 'up' | 'down' | 'left' | 'right';
-        const isAChasing = activeAntonioState === 'CHASE';
-        const aAnim = isAChasing ? 'run' : 'walk';
-        const aFrameIdx = p.walkFrame % (aSprites[aFacing]?.[aAnim]?.length || 1);
-        const aFrame = aSprites[aFacing]?.[aAnim]?.[aFrameIdx] || aSprites[aFacing]?.idle?.[0];
-
-        if (aFrame) {
-          ctx.drawImage(aFrame.canvas, ax - 18, ay - 21);
-        }
+        sAnimKey = 'walk';
       }
 
-      // Red Stalker Alert Indicator when chasing or searching
-      if (activeAntonioState === 'CHASE') {
+      const availableFrames = sSprites[sFacing]?.[sAnimKey] || sSprites[sFacing]?.walk || sSprites[sFacing]?.idle || [];
+      const animSpeed = sAnimKey === 'run' ? 5 : sAnimKey === 'search' ? 2 : 3;
+      const sFrameIdx = Math.floor(Date.now() / (1000 / animSpeed)) % Math.max(1, availableFrames.length);
+      const sFrame = availableFrames[sFrameIdx] || sSprites[sFacing]?.idle?.[0];
+
+      if (sFrame) {
+        ctx.drawImage(sFrame.canvas, sx - 22, sy - 24, 44, 48);
+      }
+
+      if (activeSolangeState === 'CHASE') {
         ctx.fillStyle = '#ef4444';
-        ctx.font = 'bold 14px monospace';
-        ctx.fillText('!', ax - 3, ay - 26);
-      } else if (activeAntonioState === 'HEARD_NOISE' || activeAntonioState === 'SEARCH') {
+        ctx.font = 'bold 16px monospace';
+        ctx.fillText('!', sx - 4, sy - 28);
+      } else if (activeSolangeState === 'HEARD_NOISE' || activeSolangeState === 'SEARCH' || activeSolangeState === 'LOST') {
         ctx.fillStyle = '#f59e0b';
-        ctx.font = 'bold 12px monospace';
-        ctx.fillText('?', ax - 3, ay - 26);
+        ctx.font = 'bold 14px monospace';
+        ctx.fillText('?', sx - 4, sy - 28);
       }
 
-      // 12. DYNAMIC LIGHTING MASK & WALL SHADOWS
+      // 12. DYNAMIC LIGHTING MASK & RAYCAST SHADOWS
       lightingSystem.renderLighting(
         ctx,
         screenWidth,
@@ -767,36 +845,20 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         p.x,
         p.y,
         p.isHiding,
-        activeAntonioX,
-        activeAntonioY,
-        activeAntonioFacing,
-        activeAntonioState === 'CHASE',
+        activeSolangeX,
+        activeSolangeY,
+        activeSolangeFacing,
+        activeSolangeState === 'CHASE',
         roomLights,
         map
       );
 
-      // Loop continues
       animId = requestAnimationFrame(gameLoop);
     };
 
     animId = requestAnimationFrame(gameLoop);
     return () => cancelAnimationFrame(animId);
-  }, [items, map, playerIndex, isHost, isPaused, missionState, currentZone]);
-
-  const handleCustomFramesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = new Image();
-        img.src = event.target?.result as string;
-        img.onload = () => {
-          SpriteRegistry.getInstance().setCustomAntonioFrames(img);
-        };
-      };
-      reader.readAsDataURL(file);
-    }
-  };
+  }, [items, map, playerIndex, isHost, isPaused, missionState, currentZone, showPreMatchMap]);
 
   const isSolid = (px: number, py: number, currentMap: number[][]) => {
     const col = Math.floor(px / TILE_SIZE);
@@ -813,7 +875,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     );
   };
 
-  // Format mm:ss
   const formatTimer = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -830,98 +891,109 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         className="w-full h-full block cursor-crosshair"
       />
 
-      {/* TOP HUD BAR */}
-      <div className="absolute top-4 left-4 right-4 flex items-start justify-between pointer-events-none z-20">
-        {/* Objectives Box */}
-        <div className="bg-black/80 border border-neutral-700/80 p-3 rounded shadow-2xl backdrop-blur-sm max-w-sm">
-          <div className="text-xs uppercase tracking-wider text-amber-400 font-bold mb-2 flex items-center justify-between">
-            <span>OBJETIVOS</span>
-            <span className="text-[10px] text-neutral-400">{currentZone}</span>
+      {/* PRE-MATCH BLUEPRINT MAP OVERVIEW (5-8 Seconds) */}
+      {showPreMatchMap && (
+        <PreMatchMapModal
+          playerIndex={playerIndex}
+          onDismiss={() => setShowPreMatchMap(false)}
+        />
+      )}
+
+      {/* TABLET PAIRING QR CODE MODAL */}
+      {showTabletModal && (
+        <TabletPairingModal
+          playerIndex={playerIndex}
+          onClose={() => setShowTabletModal(false)}
+        />
+      )}
+
+      {/* TOP HUD: FUJA DA SOLANGE!! (CENTER) */}
+      <div className="absolute top-3 left-1/2 -translate-x-1/2 pointer-events-none z-20 flex flex-col items-center gap-1">
+        <h1 className="text-sm md:text-base font-black tracking-widest text-amber-400 uppercase bg-black/80 px-4 py-1 rounded border border-neutral-800 shadow-xl drop-shadow-[0_2px_8px_rgba(245,158,11,0.3)]">
+          FUJA DA SOLANGE!!
+        </h1>
+
+        {/* Remote Controller Status Badge */}
+        {controllerStatus === 'ONLINE' ? (
+          <div className="bg-emerald-950/80 border border-emerald-600 text-emerald-300 text-[10px] px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 shadow">
+            <span>🎮 TABLET CONECTADO (JOGADOR {playerIndex})</span>
           </div>
-          <ul className="text-xs space-y-1.5">
-            <li className={`flex items-center gap-2 ${missionState.booksCollected >= 3 ? 'text-emerald-400 line-through' : 'text-neutral-200'}`}>
+        ) : controllerStatus === 'DISCONNECTED' ? (
+          <div className="bg-red-950/80 border border-red-600 text-red-300 text-[10px] px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 animate-pulse">
+            <span>⚠️ CONTROLE DESCONECTADO</span>
+          </div>
+        ) : null}
+      </div>
+
+      {/* TOP-LEFT HUD: OBJETIVOS */}
+      <div className="absolute top-3 left-3 pointer-events-none z-20">
+        <div className="bg-black/85 border border-neutral-700/80 p-3 rounded shadow-2xl backdrop-blur-sm max-w-xs">
+          <div className="text-[11px] uppercase tracking-wider text-amber-400 font-bold mb-1.5 flex items-center justify-between">
+            <span>OBJETIVOS</span>
+            <span className="text-[10px] text-neutral-400 font-normal">{currentZone}</span>
+          </div>
+          <ul className="text-[11px] space-y-1">
+            <li className={`flex items-center gap-1.5 ${missionState.booksCollected >= 3 ? 'text-emerald-400 line-through' : 'text-neutral-200'}`}>
               <span>{missionState.booksCollected >= 3 ? '☑' : '☐'}</span>
-              <span>Devolver os 3 livros na Biblioteca ({missionState.booksCollected}/3)</span>
+              <span>Devolver livros na Biblioteca ({missionState.booksCollected}/3)</span>
             </li>
-            <li className={`flex items-center gap-2 ${missionState.fusesInstalled >= 3 ? 'text-emerald-400 line-through' : 'text-neutral-200'}`}>
+            <li className={`flex items-center gap-1.5 ${missionState.fusesInstalled >= 3 ? 'text-emerald-400 line-through' : 'text-neutral-200'}`}>
               <span>{missionState.fusesInstalled >= 3 ? '☑' : '☐'}</span>
-              <span>Restaurar fusíveis dos disjuntores ({missionState.fusesInstalled}/3)</span>
+              <span>Fusíveis dos disjuntores ({missionState.fusesInstalled}/3)</span>
             </li>
-            <li className={`flex items-center gap-2 ${missionState.passwordEntered ? 'text-emerald-400 line-through' : 'text-neutral-200'}`}>
+            <li className={`flex items-center gap-1.5 ${missionState.passwordEntered ? 'text-emerald-400 line-through' : 'text-neutral-200'}`}>
               <span>{missionState.passwordEntered ? '☑' : '☐'}</span>
-              <span>Desbloquear terminal da Secretaria ({playerRef.current.collectedClues.length}/3 pistas)</span>
+              <span>Terminal da Secretaria ({playerRef.current.collectedClues.length}/3 pistas)</span>
             </li>
-            <li className={`flex items-center gap-2 font-bold ${missionState.mainGateProgress >= 100 ? 'text-emerald-400' : missionState.booksCollected >= 3 && missionState.fusesInstalled >= 3 && missionState.passwordEntered ? 'text-amber-300 animate-pulse' : 'text-neutral-500'}`}>
+            <li className={`flex items-center gap-1.5 font-bold ${missionState.mainGateProgress >= 100 ? 'text-emerald-400' : missionState.booksCollected >= 3 && missionState.fusesInstalled >= 3 && missionState.passwordEntered ? 'text-amber-300 animate-pulse' : 'text-neutral-500'}`}>
               <span>{missionState.mainGateProgress >= 100 ? '☑' : '☐'}</span>
               <span>Escapar pelo Portão Principal ({Math.round(missionState.mainGateProgress)}%)</span>
             </li>
           </ul>
         </div>
-
-        {/* Center Timer & Partner Status */}
-        <div className="flex flex-col items-center gap-2">
-          <div className={`px-4 py-1.5 rounded border ${timeRemaining <= 120 ? 'bg-red-950/80 border-red-500 text-red-400 animate-pulse' : 'bg-black/80 border-neutral-700 text-neutral-200'} font-bold tracking-widest text-lg shadow-xl`}>
-            TEMPO {formatTimer(timeRemaining)}
-          </div>
-
-          {partnerDowned && (
-            <div className="bg-red-900/90 text-red-200 text-xs px-3 py-1 rounded border border-red-600 animate-bounce">
-              ⚠️ PARCEIRO CAPTURADO! Encontre-o e segure [E] para reanimar!
-            </div>
-          )}
-        </div>
-
-        {/* Right Audio & Custom Sprite Controls */}
-        <div className="flex flex-col items-end gap-2 pointer-events-auto">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => audioSystem.toggleMute()}
-              className="bg-neutral-900/80 border border-neutral-700 hover:border-neutral-500 text-neutral-300 text-xs px-2.5 py-1.5 rounded transition cursor-pointer"
-            >
-              {audioSystem.getIsMuted() ? '🔇 Mudo' : '🔊 Som'}
-            </button>
-            <button
-              onClick={() => setIsPaused(true)}
-              className="bg-neutral-900/80 border border-neutral-700 hover:border-neutral-500 text-neutral-300 text-xs px-2.5 py-1.5 rounded transition cursor-pointer"
-            >
-              Menu [ESC]
-            </button>
-          </div>
-
-          {/* Stalker Custom Frames Injection button */}
-          <div className="text-right">
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleCustomFramesUpload}
-              accept="image/*"
-              className="hidden"
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="text-[11px] text-neutral-400 hover:text-amber-300 underline bg-black/60 px-2 py-0.5 rounded cursor-pointer"
-              title="Carregar imagem/frames personalizados de Antônio"
-            >
-              + Inserir Sprite do Perseguidor
-            </button>
-          </div>
-        </div>
       </div>
 
-      {/* BOTTOM HUD GAUGES (Stamina, Noise, Prompt) */}
-      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex flex-col items-center gap-3 z-20 pointer-events-none">
-        {/* Interaction Prompt Box */}
-        {currentPrompt && (
-          <div className="bg-amber-950/90 border border-amber-500/80 text-amber-200 text-xs px-4 py-2 rounded shadow-2xl backdrop-blur-md animate-pulse font-bold">
-            {currentPrompt}
-          </div>
-        )}
+      {/* TOP-RIGHT HUD: TEMPO & CONTROLE TABLET */}
+      <div className="absolute top-3 right-3 flex items-start gap-2 z-20">
+        <div className={`px-4 py-1.5 rounded border ${timeRemaining <= 120 ? 'bg-red-950/85 border-red-500 text-red-400 animate-pulse' : 'bg-black/85 border-neutral-700 text-neutral-200'} font-bold tracking-widest text-sm shadow-xl`}>
+          TEMPO {formatTimer(timeRemaining)}
+        </div>
 
-        {/* Status Meters */}
-        <div className="flex items-center gap-6 bg-black/75 border border-neutral-800 px-4 py-2 rounded-full backdrop-blur-md">
-          {/* Stamina Meter */}
+        {/* Option to pair tablet controller */}
+        <button
+          onClick={() => setShowTabletModal(true)}
+          className="bg-amber-600/90 hover:bg-amber-500 text-black font-bold text-xs px-2.5 py-1.5 rounded transition flex items-center gap-1 cursor-pointer shadow-lg"
+          title="Usar celular ou tablet como controle remoto"
+        >
+          <Smartphone className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Controlar pelo Tablet</span>
+        </button>
+
+        <button
+          onClick={() => audioSystem.toggleMute()}
+          className="bg-neutral-900/80 border border-neutral-700 hover:border-neutral-500 text-neutral-300 text-xs px-2.5 py-1.5 rounded transition cursor-pointer"
+        >
+          {audioSystem.getIsMuted() ? '🔇' : '🔊'}
+        </button>
+
+        <button
+          onClick={() => setIsPaused(true)}
+          className="bg-neutral-900/80 border border-neutral-700 hover:border-neutral-500 text-neutral-300 text-xs px-2.5 py-1.5 rounded transition cursor-pointer"
+        >
+          Menu [ESC]
+        </button>
+      </div>
+
+      {/* BOTTOM-LEFT HUD: ESTADO DO JOGADOR & ESTAMINA */}
+      <div className="absolute bottom-4 left-4 z-20 pointer-events-none">
+        <div className="bg-black/85 border border-neutral-800 p-2.5 rounded-lg shadow-xl backdrop-blur-md space-y-1.5">
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-neutral-400 uppercase font-semibold">Stamina [Shift]</span>
+            <span className="text-[10px] text-neutral-400 uppercase">Estado:</span>
+            <span className="text-xs font-bold text-amber-300">{playerActionState}</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-neutral-400 uppercase">Stamina [Shift]:</span>
             <div className="w-24 h-2 bg-neutral-900 rounded-full overflow-hidden border border-neutral-700">
               <div
                 className="h-full bg-emerald-500 transition-all duration-75"
@@ -930,50 +1002,83 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
             </div>
           </div>
 
-          {/* Noise Decibel Meter */}
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] text-neutral-400 uppercase font-semibold">Ruído</span>
-            <div className="w-24 h-2 bg-neutral-900 rounded-full overflow-hidden border border-neutral-700">
-              <div
-                className={`h-full transition-all duration-150 ${noiseLevel > 60 ? 'bg-red-500' : noiseLevel > 20 ? 'bg-amber-400' : 'bg-neutral-500'}`}
-                style={{ width: `${noiseLevel}%` }}
-              />
-            </div>
-          </div>
-
-          {/* Inventory item */}
           {playerRef.current.heldItem && (
-            <div className="text-[11px] text-amber-300 flex items-center gap-1">
-              <span>Item:</span>
-              <span className="bg-amber-900/60 px-2 py-0.5 rounded border border-amber-600/60 uppercase text-[10px]">
-                {playerRef.current.heldItem.replace('_', ' ')}
-              </span>
+            <div className="text-[10px] text-amber-300 pt-0.5">
+              Item em mãos: <span className="font-bold">{playerRef.current.heldItem.replace('_', ' ').toUpperCase()}</span>
             </div>
           )}
         </div>
       </div>
 
-      {/* PAUSE / IN-GAME MENU MODAL */}
+      {/* BOTTOM-RIGHT HUD: MINIMAPA CIRCULAR */}
+      <div className="absolute bottom-4 right-4 z-20 pointer-events-none">
+        <CircularMinimap
+          playerX={minimapState.playerX}
+          playerY={minimapState.playerY}
+          isHiding={minimapState.isHiding}
+          map={map}
+          solangeX={minimapState.solangeX}
+          solangeY={minimapState.solangeY}
+          solangeVisible={minimapState.solangeVisible}
+          remotePlayerX={minimapState.remoteX}
+          remotePlayerY={minimapState.remoteY}
+          remotePlayerVisible={minimapState.remoteVisible}
+        />
+      </div>
+
+      {/* CENTER BOTTOM: INTERACTION PROMPT & NOISE INDICATOR */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 z-20 pointer-events-none">
+        {currentPrompt && (
+          <div className="bg-amber-950/90 border border-amber-500/80 text-amber-200 text-xs px-4 py-1.5 rounded shadow-2xl backdrop-blur-md animate-pulse font-bold">
+            {currentPrompt}
+          </div>
+        )}
+
+        {noiseLevel > 10 && (
+          <div className="flex items-center gap-2 bg-black/85 border border-red-900/80 px-3 py-1 rounded-full text-red-400 text-[10px] font-bold animate-pulse shadow-lg">
+            <Volume2 className="w-3.5 h-3.5 animate-bounce text-red-500" />
+            <span>Você está fazendo barulho! Solange pode ouvir!</span>
+          </div>
+        )}
+
+        {partnerDowned && (
+          <div className="bg-red-900/90 text-red-100 text-xs px-3 py-1 rounded border border-red-500 animate-bounce font-bold shadow-2xl">
+            ⚠️ PARCEIRO CAPTURADO! Encontre-o e segure [E] para reanimar!
+          </div>
+        )}
+      </div>
+
+      {/* PAUSE MENU MODAL */}
       {isPaused && (
         <div className="absolute inset-0 bg-black/85 flex items-center justify-center z-50 p-4">
           <div className="bg-neutral-950 border border-neutral-800 p-6 rounded-lg max-w-sm w-full text-center space-y-4">
-            <h2 className="text-xl font-bold text-amber-400 tracking-wider">JOGO PAUSADO</h2>
+            <h2 className="text-xl font-bold text-amber-400 tracking-wider">FUJA DA SOLANGE!!</h2>
             <div className="text-xs text-neutral-400 space-y-1.5 text-left border-y border-neutral-800 py-3">
               <p><strong className="text-neutral-200">WASD / Setas:</strong> Movimentação</p>
-              <p><strong className="text-neutral-200">Shift:</strong> Correr (Atenção ao barulho!)</p>
-              <p><strong className="text-neutral-200">E:</strong> Interagir / Esconder em Armários</p>
-              <p><strong className="text-neutral-200">Silêncio:</strong> Evite correr próximo a Antônio</p>
+              <p><strong className="text-neutral-200">Shift / Botão Correr:</strong> Correr (Gera muito ruído!)</p>
+              <p><strong className="text-neutral-200">E / Botão Interagir:</strong> Interagir / Armários</p>
+              <p><strong className="text-neutral-200">Atenção:</strong> Solange começou na Sala dos Professores!</p>
             </div>
             <div className="flex flex-col gap-2 pt-2">
               <button
+                onClick={() => {
+                  setIsPaused(false);
+                  setShowTabletModal(true);
+                }}
+                className="bg-amber-600 hover:bg-amber-500 text-black font-bold py-2 rounded text-sm transition cursor-pointer flex items-center justify-center gap-2"
+              >
+                <Smartphone className="w-4 h-4" />
+                Vincular Tablet / Celular
+              </button>
+              <button
                 onClick={() => setIsPaused(false)}
-                className="bg-amber-600 hover:bg-amber-500 text-black font-bold py-2 rounded text-sm transition cursor-pointer"
+                className="bg-neutral-800 hover:bg-neutral-700 text-neutral-200 py-2 rounded text-sm transition cursor-pointer"
               >
                 Continuar Partida
               </button>
               <button
                 onClick={onExitToMenu}
-                className="bg-neutral-800 hover:bg-neutral-700 text-neutral-300 py-2 rounded text-sm transition cursor-pointer"
+                className="bg-neutral-900 hover:bg-neutral-800 text-neutral-400 py-2 rounded text-sm transition cursor-pointer"
               >
                 Voltar ao Menu Principal
               </button>

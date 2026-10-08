@@ -32,9 +32,9 @@ export class LightingSystem {
     playerX: number,
     playerY: number,
     isHiding: boolean,
-    antonioX: number,
-    antonioY: number,
-    antonioFacing: string,
+    solangeX: number,
+    solangeY: number,
+    solangeFacing: string,
     isChasing: boolean,
     roomLights: LightSource[],
     map: number[][]
@@ -91,27 +91,27 @@ export class LightingSystem {
       this.castShadowPolygon(ctx, playerX, playerY, lightRadius, cameraX, cameraY, map);
     }
 
-    // Antonio's Flashlight Beam (creates dread when he turns corners!)
-    const aScreenX = antonioX - cameraX;
-    const aScreenY = antonioY - cameraY;
+    // Solange's Flashlight Beam (creates dread when she turns corners!)
+    const sScreenX = solangeX - cameraX;
+    const sScreenY = solangeY - cameraY;
 
-    // Render Antonio's beam only if within visible proximity to camera
+    // Render Solange's beam only if within visible proximity to camera
     if (
-      aScreenX > -200 &&
-      aScreenX < screenWidth + 200 &&
-      aScreenY > -200 &&
-      aScreenY < screenHeight + 200
+      sScreenX > -200 &&
+      sScreenX < screenWidth + 200 &&
+      sScreenY > -200 &&
+      sScreenY < screenHeight + 200
     ) {
       let angle = Math.PI / 2;
-      if (antonioFacing === 'up') angle = -Math.PI / 2;
-      else if (antonioFacing === 'left') angle = Math.PI;
-      else if (antonioFacing === 'right') angle = 0;
+      if (solangeFacing === 'up') angle = -Math.PI / 2;
+      else if (solangeFacing === 'left') angle = Math.PI;
+      else if (solangeFacing === 'right') angle = 0;
 
       const beamLength = isChasing ? 190 : 150;
       const beamSpread = Math.PI * 0.28;
 
       ctx.save();
-      ctx.translate(aScreenX, aScreenY);
+      ctx.translate(sScreenX, sScreenY);
       ctx.rotate(angle);
 
       const aGrad = ctx.createRadialGradient(0, 0, 10, 0, 0, beamLength);

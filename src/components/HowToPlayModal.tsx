@@ -27,8 +27,8 @@ export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({ onClose }) => {
             <Volume2 className="w-8 h-8 text-red-400 shrink-0 mt-0.5" />
             <div>
               <strong className="text-neutral-100 block mb-1">1. O Sistema de Som (Crítico)</strong>
-              Antônio não enxerga através das paredes. Ele guia-se pelo som dos seus passos!
-              Correr [Shift] gera um ruído alto que se propaga por até 12 tiles. Ande devagar para permanecer imperceptível.
+              Solange não enxerga através das paredes. Ela guia-se pelo som dos seus passos!
+              Correr [Shift / Botão Correr] gera um ruído alto que se propaga por até 12 tiles. Ande devagar para permanecer imperceptível.
             </div>
           </div>
 
@@ -36,7 +36,7 @@ export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({ onClose }) => {
             <Footprints className="w-8 h-8 text-amber-400 shrink-0 mt-0.5" />
             <div>
               <strong className="text-neutral-100 block mb-1">2. Esconderijos</strong>
-              Armários de aço e cabines estão espalhados pela escola. Aproxime-se e pressione [E] para esconder-se dentro. Antônio passará direto se não tiver certeza da sua posição.
+              Armários de aço e cabines estão espalhados pela escola. Aproxime-se e pressione [E / Interagir] para esconder-se dentro. Solange passará direto se não tiver certeza da sua posição.
             </div>
           </div>
 
@@ -65,7 +65,7 @@ export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({ onClose }) => {
             <Users className="w-8 h-8 text-purple-400 shrink-0 mt-0.5" />
             <div>
               <strong className="text-neutral-100 block mb-1">5. Reanimação</strong>
-              Se seu parceiro for surpreendido por Antônio, ele ficará incapacitado no chão. Aproxime-se e segure [E] por alguns segundos para levantá-lo antes que Antônio retorne!
+              Se seu parceiro for surpreendido por Solange, ele ficará incapacitado no chão. Aproxime-se e segure [E] por alguns segundos para levantá-lo antes que Solange retorne!
             </div>
           </div>
         </div>
