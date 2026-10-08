@@ -1,0 +1,25 @@
+{
+  "rules": {
+    "rooms": {
+      "$roomId": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        "players": {
+          ".validate": "newData.hasChildren() && newData.numChildren() <= 2",
+          "$playerId": {
+            ".validate": "newData.hasChildren(['id', 'playerIndex', 'x', 'y'])"
+          }
+        },
+        "status": {
+          ".validate": "newData.isString() && (newData.val() === 'waiting' || newData.val() === 'countdown' || newData.val() === 'playing' || newData.val() === 'gameover' || newData.val() === 'victory')"
+        },
+        "gameTimeRemaining": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 900"
+        },
+        "missions": {
+          ".validate": "newData.hasChildren()"
+        }
+      }
+    }
+  }
+}

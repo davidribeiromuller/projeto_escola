@@ -1,0 +1,6 @@
+{
+  "name": "Depois da Última Aula",
+  "description": "Jogo cooperativo de suspense e perseguição em 2D pixel art. Dois jogadores precisam cooperar para escapar de uma escola sombria vigiada por Antônio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
