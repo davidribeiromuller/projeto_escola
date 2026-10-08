@@ -504,7 +504,8 @@ export const RemoteControllerPage: React.FC = () => {
         <span>Olhe para a tela do computador • Use o tablet para controlar</span>
         <button
           onClick={() => {
-            window.location.href = window.location.origin;
+            const base = window.location.pathname.replace(/\/controle.*$/, '') || window.location.href.split('?')[0].split('#')[0];
+            window.location.href = base || '.';
           }}
           className="text-neutral-400 hover:text-white underline cursor-pointer"
         >
